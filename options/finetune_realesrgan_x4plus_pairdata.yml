@@ -35,13 +35,13 @@ datasets:
     prefetch_mode: ~
 
   # Uncomment these for validation
-  # val:
-  #   name: validation
-  #   type: PairedImageDataset
-  #   dataroot_gt: path_to_gt
-  #   dataroot_lq: path_to_lq
-  #   io_backend:
-  #     type: disk
+  val:
+    name: validation
+    type: PairedImageDataset
+    dataroot_gt: datasets/val
+    dataroot_lq: datasets/val
+    io_backend:
+      type: disk
 
 # network structures
 network_g:
@@ -72,6 +72,7 @@ path:
 # training settings
 train:
   ema_decay: 0.999
+  accumulation_steps: 2
   optim_g:
     type: Adam
     lr: !!float 1e-4
@@ -84,12 +85,13 @@ train:
     betas: [0.9, 0.99]
 
   scheduler:
-    type: MultiStepLR
-    milestones: [400000]
-    gamma: 0.5
+    type: CosineAnnealingRestartLR
+    periods: [12261]        # total_iter + 1 (this disables restart)
+    restart_weights: [1]    # no decay in amplitude
+    eta_min: !!float 1e-7   # or whatever your minimum LR should be
 
-  total_iter: 13613
-  warmup_iter: -1  # no warm up
+  total_iter: 12260
+  warmup_iter: 400  # warm up
 
   # losses
   pixel_opt:
@@ -121,19 +123,23 @@ train:
     loss_weight: !!float 1e-1
 
   net_d_iters: 1
-  net_d_init_iters: 0
+  net_d_init_iters: 1000
 
 # Uncomment these for validation
 # validation settings
-  val:
-    val_freq: !!float 5e3
-    save_img: True
+val:
+  val_freq: 500
+  save_img: True
 
-    metrics:
-      psnr: # metric name
-        type: calculate_psnr
-        crop_border: 4
-        test_y_channel: false
+  metrics:
+    psnr: # metric name
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false
+    ssim: # metric name
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: false
 
 # logging settings
 logger:
@@ -141,7 +147,7 @@ logger:
   save_checkpoint_freq: !!float 5e3
   use_tb_logger: true
   wandb:
-    project: ~
+    project: Real-ESRGAN
     resume_id: ~
 
 # dist training settings
