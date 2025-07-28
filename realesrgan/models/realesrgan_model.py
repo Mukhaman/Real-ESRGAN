@@ -189,20 +189,15 @@ class RealESRGANModel(SRGANModel):
         self.is_train = True
 
     def optimize_parameters(self, current_iter, do_step=True):
-        # usm sharpening
-        l1_gt = self.gt_usm
-        percep_gt = self.gt_usm
-        gan_gt = self.gt_usm
-        if self.opt['l1_gt_usm'] is False:
-            l1_gt = self.gt
-        if self.opt['percep_gt_usm'] is False:
-            percep_gt = self.gt
-        if self.opt['gan_gt_usm'] is False:
-            gan_gt = self.gt
+        # USM sharpening
+        l1_gt = self.gt_usm if self.opt['l1_gt_usm'] else self.gt
+        percep_gt = self.gt_usm if self.opt['percep_gt_usm'] else self.gt
+        gan_gt = self.gt_usm if self.opt['gan_gt_usm'] else self.gt
 
         accumulation_steps = self.opt['train'].get('accumulation_steps', 1)
+        should_accumulate = (current_iter % accumulation_steps) != 0
 
-        # optimize net_g
+        # --- Generator (net_g) Update ---
         for p in self.net_d.parameters():
             p.requires_grad = False
 
@@ -211,10 +206,13 @@ class RealESRGANModel(SRGANModel):
         loss_dict = OrderedDict()
 
         if (current_iter % self.net_d_iters == 0 and current_iter > self.net_d_init_iters):
+            # Pixel loss (L1)
             if self.cri_pix:
                 l_g_pix = self.cri_pix(self.output, l1_gt)
                 l_g_total += l_g_pix
                 loss_dict['l_g_pix'] = l_g_pix
+
+            # Perceptual & Style loss (VGG)
             if self.cri_perceptual:
                 l_g_percep, l_g_style = self.cri_perceptual(self.output, percep_gt)
                 if l_g_percep is not None:
@@ -224,40 +222,44 @@ class RealESRGANModel(SRGANModel):
                     l_g_total += l_g_style
                     loss_dict['l_g_style'] = l_g_style
 
+            # GAN loss
             fake_g_pred = self.net_d(self.output)
             l_g_gan = self.cri_gan(fake_g_pred, True, is_disc=False)
             l_g_total += l_g_gan
             loss_dict['l_g_gan'] = l_g_gan
 
-            l_g_total = l_g_total / accumulation_steps  # 🔑 scale loss
-            l_g_total.backward()
+            # Backward (accumulate gradients)
+            (l_g_total / accumulation_steps).backward()  # Scale loss here
 
-            if do_step:
+            # Step optimizer (only on final accumulation step)
+            if do_step and not should_accumulate:
                 self.optimizer_g.step()
                 self.optimizer_g.zero_grad(set_to_none=True)
 
-        # optimize net_d
+        # --- Discriminator (net_d) Update ---
         for p in self.net_d.parameters():
             p.requires_grad = True
 
+        # Real samples
         real_d_pred = self.net_d(gan_gt)
         l_d_real = self.cri_gan(real_d_pred, True, is_disc=True)
         loss_dict['l_d_real'] = l_d_real
         loss_dict['out_d_real'] = torch.mean(real_d_pred.detach())
-        l_d_real = l_d_real / accumulation_steps
-        l_d_real.backward()
+        (l_d_real / accumulation_steps).backward()
 
-        fake_d_pred = self.net_d(self.output.detach().clone())
+        # Fake samples
+        fake_d_pred = self.net_d(self.output.detach())
         l_d_fake = self.cri_gan(fake_d_pred, False, is_disc=True)
         loss_dict['l_d_fake'] = l_d_fake
         loss_dict['out_d_fake'] = torch.mean(fake_d_pred.detach())
-        l_d_fake = l_d_fake / accumulation_steps
-        l_d_fake.backward()
+        (l_d_fake / accumulation_steps).backward()
 
-        if do_step:
+        # Step optimizer (only on final accumulation step)
+        if do_step and not should_accumulate:
             self.optimizer_d.step()
             self.optimizer_d.zero_grad(set_to_none=True)
 
+        # EMA update
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
 
